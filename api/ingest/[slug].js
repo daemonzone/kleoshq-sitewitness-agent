@@ -15,16 +15,20 @@ const pool = new Pool({
 });
 
 // ─── HMAC validation ─────────────────────────────────────────────
-function verifySignature(rawBody, signature, secret) {
+// We receive the gzip body, decompress it to get the JSON, then verify.
+function verifySignature(jsonBody, signature, secret) {
+  // Strip the "sha256=" prefix
+  const sigValue = signature.startsWith('sha256=') ? signature.slice(7) : signature;
+
   const expected = crypto
     .createHmac('sha256', secret)
-    .update(rawBody)
-    .digest('base64');
+    .update(jsonBody)          // sign the JSON string, not the gzip bytes
+    .digest('hex');            // PHP uses hex output
 
   try {
     return crypto.timingSafeEqual(
-      Buffer.from(expected),
-      Buffer.from(signature)
+      Buffer.from(expected, 'utf8'),
+      Buffer.from(sigValue,  'utf8')
     );
   } catch {
     return false;
@@ -58,7 +62,6 @@ module.exports = async function handler(req, res) {
 
   // Content-Type check
   const contentType = req.headers['content-type'] || '';
-  console.log(`ContentType: ${contentType}`);
 
   if (!contentType.includes('application/json')) {
     return res.status(400).json({ error: 'Invalid content type' });
@@ -66,27 +69,44 @@ module.exports = async function handler(req, res) {
 
   // URL: /api/ingest/<customer>
   const { slug } = req.query;
+  console.log(`Slug: ${slug}`);
 
   if (!slug) {
     return res.status(400).json({ error: 'Missing source slug' });
   }
 
+  console.log("Headers", req.headers);
+
   const rawBody = await getRawBody(req);
 
-  const signature  = req.headers['x-sim-signature'];
-  const deliveryId = req.headers['x-sim-delivery-id'];
-  const eventType  = req.headers['x-sim-event'] || 'snapshot';
-  const timestamp  = req.headers['x-sim-timestamp'];
+  const signature = req.headers['x-sitewitness-signature'];
+  const host      = req.headers['x-sitewitness-host'];
 
-  if (!signature || !deliveryId || !timestamp) {
+  if (!signature || !host) {
+    console.log(`Missing valid headers`);
     return res.status(400).json({ error: 'Missing headers' });
   }
 
-  // ── Replay protection (5 min window)
-  const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - Number(timestamp)) > 300) {
-    return res.status(401).json({ error: 'Stale request' });
+  // Decompress if the body was gzip-encoded (PHP sends Content-Encoding: gzip).
+  // The HMAC is computed over the raw JSON string, not the compressed bytes.
+  let jsonBody;
+  const contentEncoding = req.headers['content-encoding'] || '';
+  if (contentEncoding.includes('gzip')) {
+    try {
+      jsonBody = require('zlib').gunzipSync(rawBody);
+    } catch (err) {
+      console.error('Decompression failed:', err.message);
+      return res.status(400).json({ error: 'Failed to decompress body' });
+    }
+  } else {
+    jsonBody = rawBody;
   }
+
+  // ── Replay protection (5 min window)
+  // const now = Math.floor(Date.now() / 1000);
+  // if (Math.abs(now - Number(timestamp)) > 300) {
+  //   return res.status(401).json({ error: 'Stale request' });
+  // }
 
   // ── Load source
   let sourceRecord;
@@ -94,15 +114,19 @@ module.exports = async function handler(req, res) {
   try {
     const result = await pool.query(
       `SELECT * FROM sources
-       WHERE slug = $1 AND platform = 'wp_drift' AND active = true`,
+       WHERE slug = $1 AND active = true`,
       [slug]
     );
 
     if (result.rows.length === 0) {
+      console.error("Source not found"); 
       return res.status(403).json({ error: 'Unknown source' });
     }
 
     sourceRecord = result.rows[0];
+
+    console.log("Customer found");
+    console.log(sourceRecord);
 
   } catch (err) {
     console.error('DB error:', err.message);
@@ -110,27 +134,32 @@ module.exports = async function handler(req, res) {
   }
 
   // ── Verify HMAC
-  if (!verifySignature(rawBody, signature, sourceRecord.webhook_secret)) {
+  if (!verifySignature(jsonBody, signature, sourceRecord.webhook_secret)) {
+    console.error("Signature is NOT valid")
     return res.status(401).json({ error: 'Invalid signature' });
   }
+
+  console.log("Signature is valid")
 
   // ── Parse payload
   let payload;
 
   try {
-    payload = JSON.parse(rawBody.toString('utf8'));
+    payload = JSON.parse(jsonBody.toString('utf8'));
   } catch {
     return res.status(400).json({ error: 'Invalid JSON' });
   }
 
   // ── Derive fields
-  const idempotencyKey = `src${sourceRecord.id}-${deliveryId}`;
-  const payloadHash    = computePayloadHash(rawBody);
+  const payloadHash    = computePayloadHash(jsonBody);
+  const deliveryId = `${payloadHash}`;
+  const idempotencyKey = `${slug}-${sourceRecord.id}-${deliveryId}`;
+  const eventType = 'sitewitness_report';
 
   const aggregateType = payload.type || eventType; // snapshot | delta
   const aggregateId   = payload.site || null;
 
-  console.log(`📥 [${eventType}] ${aggregateType} delivery:${deliveryId}`);
+  console.log(`📥 [${eventType}] ${aggregateType} delivery: ${deliveryId}`);
 
   // ── Transaction
   const client = await pool.connect();
@@ -140,11 +169,12 @@ module.exports = async function handler(req, res) {
 
     // Dedup
     const dedup = await client.query(
-      `INSERT INTO events_processed_keys (source_id, idempotency_key)
-       VALUES ($1, $2)
-       ON CONFLICT (source_id, idempotency_key) DO NOTHING
+      `INSERT INTO ingestions (site_identifier, source_id, idempotency_key, 
+       payload, event_type)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (site_identifier, source_id, idempotency_key) DO NOTHING
        RETURNING id`,
-      [sourceRecord.id, idempotencyKey]
+      [host, sourceRecord.id, idempotencyKey, jsonBody, eventType]
     );
 
     if (dedup.rows.length === 0) {
@@ -153,25 +183,9 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, duplicate: true });
     }
 
-    // Insert event
-    const result = await client.query(
-      `INSERT INTO events
-        (source_id, event_type, aggregate_type, aggregate_id, payload, payload_hash)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id`,
-      [
-        sourceRecord.id,
-        eventType,
-        aggregateType,
-        aggregateId,
-        payload,
-        payloadHash
-      ]
-    );
-
     await client.query('COMMIT');
 
-    console.log(`💾 Stored event ${result.rows[0].id}`);
+    console.log(`💾 Stored event ${dedup.rows[0].id}`);
 
     return res.status(200).json({ ok: true });
 
