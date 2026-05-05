@@ -58,7 +58,7 @@ module.exports = async function handler(req, res) {
 
   // Content-Type check
   const contentType = req.headers['content-type'] || '';
-  console.log(`ContentType: #{contentType}`);
+  console.log(`ContentType: ${contentType}`);
 
   if (!contentType.includes('application/json')) {
     return res.status(400).json({ error: 'Invalid content type' });
