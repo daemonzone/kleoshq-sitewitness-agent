@@ -56,8 +56,11 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Fail fast
-  if (!req.headers['content-type']?.includes('application/json')) {
+  // Content-Type check
+  const contentType = req.headers['content-type'] || '';
+  console.log(`ContentType: #{contentType}`);
+
+  if (!contentType.includes('application/json')) {
     return res.status(400).json({ error: 'Invalid content type' });
   }
 
