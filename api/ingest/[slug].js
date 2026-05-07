@@ -94,10 +94,10 @@ module.exports = async function handler(req, res) {
 
   try {
     const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const supabaseKey = process.env.SUPABASE_SECRET_KEY;
 
     console.log('SUPABASE_URL:', supabaseUrl);
-    console.log('SUPABASE_SERVICE_ROLE_KEY:', supabaseKey ? '(set)' : '(missing)');
+    console.log('SUPABASE_SECRET_KEY:', supabaseKey ? '(set)' : '(missing)');
 
     const supabase = createClient(supabaseUrl, supabaseKey);
 
