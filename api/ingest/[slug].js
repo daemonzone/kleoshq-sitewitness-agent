@@ -138,7 +138,7 @@ module.exports = async function handler(req, res) {
 
   // ── Derive fields ───────────────────────────────────────────────
   const payloadHash    = computePayloadHash(jsonBody);
-  const idempotencyKey = `${slug}-${sourceRecord.id}-${payloadHash}`;
+  const idempotencyKey = `${slug}-${payloadHash}`;
   const eventType      = 'sitewitness_report';
   const aggregateType  = payload.type || eventType;
 
