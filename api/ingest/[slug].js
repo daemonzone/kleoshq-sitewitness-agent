@@ -164,11 +164,19 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, duplicate: true });
     }
 
+    const ingestionId = dedup.rows[0].id;
+
+    // ── Log ingestion ───────────────────────────────────────────────
+    await client.query(
+      `INSERT INTO ingestions_log (site_identifier, idempotency_key, event_type, source_id)
+       VALUES ($1, $2, $3, $4)`,
+      [host, idempotencyKey, eventType, sourceRecord.id]
+    );
+
     await client.query('COMMIT');
-    console.log(`💾 Stored event ${dedup.rows[0].id}`);
+    console.log(`💾 Stored event ${ingestionId}`);
 
     // ── Trigger processor ───────────────────────────────────────────
-    const ingestionId = dedup.rows[0].id;
     const processorUrl = process.env.PROCESSOR_URL;
     if (processorUrl) {
       try {
