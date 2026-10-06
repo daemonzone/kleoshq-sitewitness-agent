@@ -168,9 +168,9 @@ module.exports = async function handler(req, res) {
 
     // ── Log ingestion ───────────────────────────────────────────────
     await client.query(
-      `INSERT INTO ingestions_log (site_identifier, idempotency_key, event_type, source_id)
-       VALUES ($1, $2, $3, $4)`,
-      [host, idempotencyKey, eventType, sourceRecord.id]
+      `INSERT INTO ingestions_log (id, site_identifier, idempotency_key, event_type, source_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [ingestionId, host, idempotencyKey, eventType, sourceRecord.id]
     );
 
     await client.query('COMMIT');
