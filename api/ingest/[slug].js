@@ -166,6 +166,25 @@ module.exports = async function handler(req, res) {
 
     await client.query('COMMIT');
     console.log(`💾 Stored event ${dedup.rows[0].id}`);
+
+    // ── Trigger processor ───────────────────────────────────────────
+    const ingestionId = dedup.rows[0].id;
+    const processorUrl = process.env.PROCESSOR_URL;
+    if (processorUrl) {
+      try {
+        await fetch(processorUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ingestion_id: ingestionId })
+        });
+        console.log(`🔄 Triggered processor for ingestion ${ingestionId}`);
+      } catch (err) {
+        console.error('Failed to trigger processor:', err.message);
+      }
+    } else {
+      console.warn('PROCESSOR_URL not set, skipping processor trigger');
+    }
+
     return res.status(200).json({ ok: true });
 
   } catch (err) {
