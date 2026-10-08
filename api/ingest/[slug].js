@@ -180,12 +180,17 @@ module.exports = async function handler(req, res) {
     const processorUrl = process.env.PROCESSOR_URL;
     if (processorUrl) {
       try {
-        await fetch(processorUrl, {
+        // The processor handles every pending ingestion of the source
+        const processorRes = await fetch(processorUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ingestion_id: ingestionId })
+          body: JSON.stringify({ source_id: sourceRecord.id })
         });
-        console.log(`🔄 Triggered processor for ingestion ${ingestionId}`);
+        if (processorRes.ok) {
+          console.log(`🔄 Triggered processor for source ${sourceRecord.id} (ingestion ${ingestionId})`);
+        } else {
+          console.error(`Processor returned ${processorRes.status}:`, (await processorRes.text()).slice(0, 500));
+        }
       } catch (err) {
         console.error('Failed to trigger processor:', err.message);
       }
